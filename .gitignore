@@ -1,0 +1,18 @@
+﻿# Data files: never commit raw data to version control
+data/
+*.csv
+
+# Python
+__pycache__/
+.venv/
+venv/
+
+# dbt artifacts (generated, not source code)
+target/
+dbt_packages/
+logs/
+
+# Secrets: must NEVER be committed
+.env
+*.json
+profiles.yml
