@@ -1,0 +1,19 @@
+# Declares the raw source tables loaded into BigQuery.
+# This lets dbt models reference them via {{ source(...) }}.
+
+version: 2
+
+sources:
+  - name: olist_raw
+    database: olist-analytics-500414
+    schema: olist_raw
+    tables:
+      - name: orders
+      - name: order_items
+      - name: order_payments
+      - name: order_reviews
+      - name: customers
+      - name: products
+      - name: sellers
+      - name: geolocation
+      - name: category_translation
