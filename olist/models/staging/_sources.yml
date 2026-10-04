@@ -17,3 +17,4 @@ sources:
       - name: sellers
       - name: geolocation
       - name: category_translation
+      - name: fx_rates
