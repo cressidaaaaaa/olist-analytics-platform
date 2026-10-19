@@ -10,6 +10,7 @@ with order_items as (
 orders as (
     select
         order_id,
+        customer_id,
         order_status,
         order_purchase_timestamp
     from {{ ref('stg_orders') }}
@@ -27,6 +28,7 @@ select
     oi.order_item_id,
     oi.product_id,
     oi.seller_id,
+    o.customer_id,
     o.order_status,
     o.order_purchase_timestamp,
     date(o.order_purchase_timestamp) as purchase_date,
