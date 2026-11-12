@@ -2,6 +2,8 @@
 -- Grain: one row per order (order_id).
 -- Every source is first reduced to one row per order, then joined on order_id,
 -- so all joins are one-to-one and the row count equals stg_orders (no fan-out).
+-- Delivery is split into stages so late deliveries can be traced to the
+-- seller (handling) or the carrier (transit).
 
 with orders as (
     select * from {{ ref('stg_orders') }}
@@ -44,6 +46,7 @@ select
     o.order_status,
     o.order_purchase_timestamp,
     o.order_approved_at,
+    o.order_delivered_carrier_date,
     o.order_delivered_customer_date,
     o.order_estimated_delivery_date,
 
@@ -60,13 +63,30 @@ select
     p.total_paid_brl,
     p.total_paid_eur,
 
-    -- Delivery performance (null when the order was never delivered)
+    -- Delivery performance, total (null when the order was never delivered)
     date_diff(
         date(o.order_delivered_customer_date),
         date(o.order_purchase_timestamp),
         day
     ) as delivery_days,
     date(o.order_delivered_customer_date) > date(o.order_estimated_delivery_date) as is_late,
+
+    -- Delivery performance, by stage
+    date_diff(
+        date(o.order_delivered_carrier_date),
+        date(o.order_approved_at),
+        day
+    ) as seller_handling_days,
+    date_diff(
+        date(o.order_delivered_customer_date),
+        date(o.order_delivered_carrier_date),
+        day
+    ) as carrier_transit_days,
+    date_diff(
+        date(o.order_delivered_customer_date),
+        date(o.order_estimated_delivery_date),
+        day
+    ) as delay_vs_estimate_days,
 
     -- Customer satisfaction
     r.review_count,
