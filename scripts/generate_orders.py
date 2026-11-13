@@ -1,14 +1,21 @@
 """
-Generate one weekly batch of simulated Olist orders and append them to BigQuery.
+Generate weekly batches of simulated Olist orders and append them to BigQuery.
 
 Method: resample real orders and shift all their timestamps to a recent week.
 - Status mix, delivery durations, items and payments follow the real data.
 - customer_id, product_id and seller_id come from real rows, so dbt relationship tests pass.
 - Written to separate tables (olist_raw.sim_*); the original Olist tables are never modified.
-- Each run covers the week that ended 21 days ago, so most orders already have their
-  final status. Re-running for the same week does nothing.
+- Each batch covers one full Monday-to-Monday week. The latest batch is last week.
+- Each order is stored with its full planned timeline, including events after today.
+  The dbt staging model hides events that have not happened yet, so orders move from
+  shipped to delivered on their own as time passes.
 - Some batches get a known anomaly (late carriers, late sellers, cancellations), logged in
   olist_raw.sim_batches, so the monitoring can be tested against a ground truth.
+
+Usage:
+    python scripts/generate_orders.py                      # last week, random scenario
+    python scripts/generate_orders.py --scenario normal    # last week, forced scenario
+    python scripts/generate_orders.py --weeks 4            # backfill the last 4 weeks
 """
 
 import argparse
@@ -23,7 +30,6 @@ from google.cloud import bigquery
 PROJECT_ID = "olist-analytics-500414"
 RAW = f"{PROJECT_ID}.olist_raw"
 ORDERS_PER_BATCH = 100
-LAG_DAYS = 21  # the batch covers the 7 days that ended this many days ago
 
 # Probability of each scenario when none is forced
 SCENARIOS = {
@@ -43,10 +49,12 @@ TIMESTAMP_COLS = [
 ]
 
 
-def get_window(now: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return the start and end of the week this batch covers."""
-    window_end = now - timedelta(days=LAG_DAYS)
-    window_start = window_end - timedelta(days=7)
+def get_window(now: pd.Timestamp, weeks_ago: int = 0) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return a Monday-to-Monday week: last week, moved back by weeks_ago weeks."""
+    today = now.normalize()
+    this_monday = today - timedelta(days=today.weekday())
+    window_start = this_monday - timedelta(weeks=1 + weeks_ago)
+    window_end = window_start + timedelta(weeks=1)
     return window_start, window_end
 
 
@@ -120,9 +128,9 @@ def apply_scenario(orders: pd.DataFrame, scenario: str, rng) -> pd.DataFrame:
     return orders
 
 
-def build_batch(orders, items, payments, window_start, now, rng, scenario):
+def build_batch(orders, items, payments, window_start, rng, scenario):
     """Give each sampled order a new id and a new purchase time, shift all its dates,
-    and inject the scenario."""
+    and inject the scenario. Dates after today are kept: dbt hides them until they pass."""
     orders = orders.copy()
     n = len(orders)
 
@@ -138,23 +146,14 @@ def build_batch(orders, items, payments, window_start, now, rng, scenario):
     for col in TIMESTAMP_COLS:
         orders[col] = orders[col] + shift
 
-    # 4. Inject the scenario (before the future check, so delays can push dates past today)
+    # 4. Inject the scenario
     orders = apply_scenario(orders, scenario, rng)
 
-    # 5. Dates that land after today have not happened yet
-    future_delivery = orders["order_delivered_customer_date"] > now
-    orders.loc[future_delivery, "order_delivered_customer_date"] = pd.NaT
-    orders.loc[future_delivery, "order_status"] = "shipped"
-
-    future_carrier = orders["order_delivered_carrier_date"] > now
-    orders.loc[future_carrier, "order_delivered_carrier_date"] = pd.NaT
-    orders.loc[future_carrier, "order_status"] = "processing"
-
-    # 6. Round to whole seconds: pandas works in nanoseconds, BigQuery stores microseconds
+    # 5. Round to whole seconds: pandas works in nanoseconds, BigQuery stores microseconds
     for col in TIMESTAMP_COLS:
         orders[col] = orders[col].dt.floor("s")
 
-    # 7. Apply the new ids and the same shift to items and payments
+    # 6. Apply the new ids and the same shift to items and payments
     id_map = pd.Series(orders["new_order_id"].values, index=orders["order_id"])
     shift_map = pd.Series(shift.values, index=orders["order_id"])
 
@@ -201,31 +200,19 @@ def log_batch(client: bigquery.Client, window_start, window_end, scenario: str, 
     client.load_table_from_dataframe(row, f"{RAW}.sim_batches", job_config=job_config).result()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate one weekly batch of simulated orders.")
-    parser.add_argument(
-        "--scenario",
-        choices=list(SCENARIOS),
-        help="Force a scenario instead of drawing one at random.",
-    )
-    args = parser.parse_args()
-
-    client = bigquery.Client(project=PROJECT_ID)
-    rng = np.random.default_rng()
-    now = pd.Timestamp.now(tz="UTC").floor("s")
-
-    window_start, window_end = get_window(now)
-    print(f"Batch window: {window_start:%Y-%m-%d} -> {window_end:%Y-%m-%d}")
+def run_one_batch(client, rng, window_start, window_end, forced_scenario) -> None:
+    """Generate, write and log one weekly batch, unless that week already exists."""
+    print(f"\nBatch window: {window_start:%Y-%m-%d} -> {window_end:%Y-%m-%d}")
 
     if already_generated(client, window_start, window_end):
-        print("A batch for this window already exists. Nothing to do.")
+        print("Already exists, skipped.")
         return
 
-    scenario = pick_scenario(args.scenario, rng)
+    scenario = pick_scenario(forced_scenario, rng)
     print(f"Scenario: {scenario}")
 
     orders, items, payments = read_real_sample(client, ORDERS_PER_BATCH)
-    orders, items, payments = build_batch(orders, items, payments, window_start, now, rng, scenario)
+    orders, items, payments = build_batch(orders, items, payments, window_start, rng, scenario)
 
     append(client, orders, "orders", "sim_orders")
     append(client, items, "order_items", "sim_order_items")
@@ -233,7 +220,31 @@ def main() -> None:
     log_batch(client, window_start, window_end, scenario, len(orders))
 
     print(f"Generated {len(orders)} orders, {len(items)} items, {len(payments)} payments")
-    print(orders["order_status"].value_counts().to_string())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate weekly batches of simulated orders.")
+    parser.add_argument(
+        "--scenario",
+        choices=list(SCENARIOS),
+        help="Force a scenario for every batch instead of drawing one at random.",
+    )
+    parser.add_argument(
+        "--weeks",
+        type=int,
+        default=1,
+        help="Number of weeks to generate, ending with last week (default: 1).",
+    )
+    args = parser.parse_args()
+
+    client = bigquery.Client(project=PROJECT_ID)
+    rng = np.random.default_rng()
+    now = pd.Timestamp.now(tz="UTC").floor("s")
+
+    # Oldest week first, so the batches are written in time order
+    for weeks_ago in reversed(range(args.weeks)):
+        window_start, window_end = get_window(now, weeks_ago)
+        run_one_batch(client, rng, window_start, window_end, args.scenario)
 
 
 if __name__ == "__main__":

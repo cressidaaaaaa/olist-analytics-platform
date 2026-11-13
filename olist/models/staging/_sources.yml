@@ -18,3 +18,7 @@ sources:
       - name: geolocation
       - name: category_translation
       - name: fx_rates
+      - name: sim_orders
+      - name: sim_order_items
+      - name: sim_order_payments
+      - name: sim_batches
