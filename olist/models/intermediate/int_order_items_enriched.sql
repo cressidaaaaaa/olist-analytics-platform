@@ -12,7 +12,8 @@ orders as (
         order_id,
         customer_id,
         order_status,
-        order_purchase_timestamp
+        order_purchase_timestamp,
+        is_simulated
     from {{ ref('stg_orders') }}
 ),
 
@@ -32,6 +33,7 @@ select
     o.order_status,
     o.order_purchase_timestamp,
     date(o.order_purchase_timestamp) as purchase_date,
+    o.is_simulated,
 
     -- Original amounts in BRL
     oi.price as price_brl,

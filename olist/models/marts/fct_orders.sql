@@ -44,6 +44,7 @@ select
 
     -- Status and timestamps
     o.order_status,
+    o.is_simulated,
     o.order_purchase_timestamp,
     o.order_approved_at,
     o.order_delivered_carrier_date,

@@ -23,6 +23,7 @@ select
     -- Context
     order_status,
     order_purchase_timestamp,
+    is_simulated,
 
     -- Measures
     price_brl,

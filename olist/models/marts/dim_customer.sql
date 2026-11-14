@@ -2,6 +2,8 @@
 -- Grain: one row per customer_id (Olist creates one customer_id per order).
 -- customer_unique_id identifies the real person; we use it to compute
 -- how many orders each person placed and whether they are a repeat customer.
+-- Only real orders are counted: simulated orders reuse real customer_ids,
+-- which would otherwise inflate the repeat-customer rate.
 
 with customers as (
     select * from {{ ref('stg_customers') }}
@@ -12,9 +14,10 @@ orders as (
         order_id,
         customer_id
     from {{ ref('stg_orders') }}
+    where not is_simulated
 ),
 
--- How many orders each real person (customer_unique_id) placed in total
+-- How many real orders each person (customer_unique_id) placed in total
 orders_per_person as (
     select
         c.customer_unique_id,
