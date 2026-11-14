@@ -4,10 +4,20 @@
 olist:
   target: ci
   outputs:
+    # CI: builds into a separate dataset, only to check that everything runs
     ci:
       type: bigquery
       method: oauth
       project: olist-analytics-500414
       dataset: olist_ci
+      location: EU
+      threads: 4
+
+    # Weekly run: updates the dataset that Power BI reads
+    prod:
+      type: bigquery
+      method: oauth
+      project: olist-analytics-500414
+      dataset: olist_dev
       location: EU
       threads: 4

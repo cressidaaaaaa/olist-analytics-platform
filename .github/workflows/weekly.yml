@@ -1,0 +1,40 @@
+name: Weekly pipeline
+
+# Every Monday at 06:00 UTC (07:00 Paris in winter), and on demand
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  weekly-run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install dbt-bigquery==1.12.0 pandas pyarrow db-dtypes requests numpy
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Load new FX rates
+        run: python scripts/load_fx_rates.py
+
+      - name: Generate last week's simulated orders
+        run: python scripts/generate_orders.py
+
+      - name: Build and test all dbt models
+        working-directory: olist
+        env:
+          DBT_PROFILES_DIR: ci
+        run: dbt build --target prod
