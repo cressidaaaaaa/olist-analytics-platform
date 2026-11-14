@@ -18,3 +18,4 @@ logs/
 profiles.yml
 # The CI profile has no credentials (auth comes from a GitHub secret), so keep it in the repo
 !olist/ci/profiles.yml
+!n8n/*.json

@@ -1,0 +1,325 @@
+{
+  "name": "Weekly pipeline report",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "995f84ea-2489-4179-b27a-7e57615ced1b",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "url": "\thttps://api.github.com/repos/cressidaaaaaa/olist-analytics-platform/actions/workflows/weekly.yml/runs?per_page=1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        192,
+        144
+      ],
+      "id": "ccfc7e17-ac7f-4c11-bca6-8d65874679a0",
+      "name": "Check weekly run"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "24d4b058-0dfe-4183-825d-a378c4ee9850",
+              "leftValue": "={{ $json.workflow_runs[0].conclusion }}",
+              "rightValue": "success",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "53dfffbe-6e55-44e7-b8c3-c045aa29fe0b",
+              "leftValue": "={{ $json.workflow_runs[0].created_at\n}}",
+              "rightValue": "={{ $now.minus({ days: 2 }) }}",
+              "operator": {
+                "type": "dateTime",
+                "operation": "after"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        416,
+        144
+      ],
+      "id": "8c59d57f-0ed9-4d33-9cbe-3c8228b1d2ea",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "fromEmail": "lingfei0111@gmail.com",
+        "toEmail": "lingfei0111@gmail.com",
+        "subject": "⚠ Olist weekly pipeline: run failed or missing",
+        "emailFormat": "text",
+        "text": "=The weekly GitHub Actions run is not OK.\n\nLast run status: {{ $json.workflow_runs[0].conclusion }}\nLast run started: {{ $json.workflow_runs[0].created_at }}\nDetails: {{ $json.workflow_runs[0].html_url\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        688,
+        208
+      ],
+      "id": "4043561b-eeeb-4603-8189-71d62dade3c3",
+      "name": "Alert: pipeline failed",
+      "webhookId": "19e98ed4-dc1d-4954-9f86-7d27763bc6a6",
+      "credentials": {
+        "smtp": {
+          "id": "tf7R7y6EDoL6kiNC",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "projectId": {
+          "__rl": true,
+          "value": "olist-analytics-500414",
+          "mode": "list",
+          "cachedResultName": "olist-analytics",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=olist-analytics-500414"
+        },
+        "sqlQuery": "select\n    date_trunc(purchase_date, week(monday)) as week_start,\n    count(*) as orders,\n    round(countif(order_status in ('canceled', 'unavailable')) / count(*) * 100, 1) as cancel_rate_pct,\n    round(countif(order_status = 'delivered') / count(*) * 100, 1) as delivered_share_pct,\n    round(countif(is_late) / nullif(countif(is_late is not null), 0) * 100, 1) as late_rate_pct,\n    round(avg(seller_handling_days), 1) as avg_seller_handling_days,\n    round(avg(carrier_transit_days), 1) as avg_carrier_transit_days,\n    round(sum(case when order_status not in ('canceled', 'unavailable')\n                   then items_total_eur end), 2) as gmv_eur\nfrom `olist-analytics-500414.olist_dev.fct_orders`\nwhere is_simulated\ngroup by week_start\norder by week_start desc\nlimit 6",
+        "options": {
+          "location": "EU"
+        }
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        640,
+        48
+      ],
+      "id": "859ceafa-5dbe-44cd-b614-7ea76ae15242",
+      "name": "Weekly KPIs",
+      "credentials": {
+        "googleApi": {
+          "id": "mUUUcjRMWxc9pVTv",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: one item per week from the Weekly KPIs node, newest week first\nconst weeks = $input.all().map(item => item.json);\n\n// A week is \"final\" once most of its orders have been delivered;\n// before that, delivery metrics look better than they really are.\nconst FINAL_SHARE = 80;\nconst finalWeeks = weeks.filter(w => Number(w.delivered_share_pct) >= FINAL_SHARE);\n\nconst latest = weeks[0];                    // newest week (may not be final yet)\nconst latestFinal = finalWeeks[0];          // newest week that can be fully judged\nconst baselineWeeks = finalWeeks.slice(1);  // older final weeks = the normal level\n\n// Average of one column over several weeks\nconst avg = (rows, key) =>\n  rows.reduce((sum, r) => sum + Number(r[key]), 0) / rows.length;\n\nconst alerts = [];\n\n// 1. Volume and cancellations are known as soon as orders are placed\nif (Number(latest.orders) < 50) {\n  alerts.push(`Low order volume in week ${latest.week_start}: ${latest.orders} orders`);\n}\nif (Number(latest.cancel_rate_pct) > 5) {\n  alerts.push(`High cancellation rate in week ${latest.week_start}: ${latest.cancel_rate_pct}%`);\n}\n\n// 2. Delivery metrics: compare the latest final week with the older final weeks\nif (latestFinal && baselineWeeks.length > 0) {\n  const baseLate = avg(baselineWeeks, 'late_rate_pct');\n  const baseSeller = avg(baselineWeeks, 'avg_seller_handling_days');\n  const baseCarrier = avg(baselineWeeks, 'avg_carrier_transit_days');\n\n  if (Number(latestFinal.late_rate_pct) > baseLate + 5) {\n    alerts.push(`Late deliveries up in week ${latestFinal.week_start}: ${latestFinal.late_rate_pct}% vs ${baseLate.toFixed(1)}% normally`);\n  }\n  if (Number(latestFinal.avg_seller_handling_days) > baseSeller + 2) {\n    alerts.push(`Sellers slower in week ${latestFinal.week_start}: ${latestFinal.avg_seller_handling_days} days vs ${baseSeller.toFixed(1)} normally`);\n  }\n  if (Number(latestFinal.avg_carrier_transit_days) > baseCarrier + 3) {\n    alerts.push(`Carriers slower in week ${latestFinal.week_start}: ${latestFinal.avg_carrier_transit_days} days vs ${baseCarrier.toFixed(1)} normally`);\n  }\n}\n\nreturn [{\n  json: {\n    latest_week: latest.week_start,\n    latest_final_week: latestFinal ? latestFinal.week_start : null,\n    has_alerts: alerts.length > 0,\n    alerts,\n    weeks,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        48
+      ],
+      "id": "2f6d5432-5c3d-4533-b877-e16248e2a5eb",
+      "name": "Detect anomalies"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3-flash-preview",
+          "mode": "list",
+          "cachedResultName": "Gemini 3 Flash Preview"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are a data analyst writing the weekly operations report for an e-commerce marketplace (simulated Olist data).\n\nRules:\n- Use only the numbers provided below. Do not invent figures or causes.\n- Delivery metrics (late_rate_pct, avg_seller_handling_days, avg_carrier_transit_days) are only reliable for weeks where delivered_share_pct is at least 80. For more recent weeks, say they are not final yet.\n- If the alerts list is not empty, start with the alerts.\n- Only for delivery alerts (late deliveries, seller handling, carrier transit), say which stage the numbers point to. For volume or cancellation alerts, state the figure and its usual level from the data, without suggesting a cause.\n- If the alerts list is empty, say in one sentence that all monitored metrics are within normal ranges.\n- Then give a short overview of the latest week: orders, cancellation rate, GMV in EUR.\n- Under 150 words. Plain text, no markdown, no bullet symbols.\n\nData:\n{{ JSON.stringify($json, null, 2) }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1088,
+        48
+      ],
+      "id": "5cf97f61-1977-4c32-a792-621cd536b74a",
+      "name": "Write summary",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "AvtkYfaqE8feI3ZB",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        800,
+        -368
+      ],
+      "id": "0c69b83a-5122-4410-b609-528974ae7673",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "fromEmail": "lingfei0111@gmail.com",
+        "toEmail": "lingfei0111@gmail.com",
+        "subject": "={{ $('Detect anomalies').item.json.has_alerts ? '⚠ Olist weekly report: anomalies detected' : 'Olist weekly report: all normal' }}",
+        "emailFormat": "text",
+        "text": "={{ $json.content.parts[0].text }}\n\n---\nRule-based alerts: {{ $('Detect anomalies').item.json.alerts.join('; ') || 'none' }}\nLatest week: {{ $('Detect anomalies').item.json.latest_week }} | Latest final week: {{ $('Detect anomalies').item.json.latest_final_week }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1520,
+        48
+      ],
+      "id": "598fb8e7-035e-43fc-864b-cb9e560456a6",
+      "name": "Send weekly report",
+      "webhookId": "6301c08a-7b19-4973-889b-ca5b5eedfece",
+      "credentials": {
+        "smtp": {
+          "id": "tf7R7y6EDoL6kiNC",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Check weekly run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check weekly run": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Weekly KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Alert: pipeline failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly KPIs": {
+      "main": [
+        [
+          {
+            "node": "Detect anomalies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect anomalies": {
+      "main": [
+        [
+          {
+            "node": "Write summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write summary": {
+      "main": [
+        [
+          {
+            "node": "Send weekly report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check weekly run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "Europe/Paris",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "1467013d-d5b8-42cd-a209-0704fd7a7508",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "26ef3f696c5484bc62d0b47d067fd2abfbefdc91cb515a251050a52bc9c67e80"
+  },
+  "nodeGroups": [],
+  "id": "aMwuWbEWktlNrGyS",
+  "tags": []
+}
