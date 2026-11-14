@@ -1,0 +1,13 @@
+# dbt connection settings used by GitHub Actions (not on your laptop).
+# Authentication comes from the service account key that the workflow loads
+# from the GCP_SA_KEY secret, so no credentials are stored in this file.
+olist:
+  target: ci
+  outputs:
+    ci:
+      type: bigquery
+      method: oauth
+      project: olist-analytics-500414
+      dataset: olist_ci
+      location: EU
+      threads: 4
