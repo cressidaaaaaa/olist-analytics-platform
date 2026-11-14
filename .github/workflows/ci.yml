@@ -1,0 +1,35 @@
+name: dbt CI
+
+# When to run: every push to main, every pull request, and on demand
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  dbt-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dbt
+        run: pip install dbt-bigquery==1.12.0
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Build and test all dbt models
+        working-directory: olist
+        env:
+          DBT_PROFILES_DIR: ci
+        run: dbt build --target ci
